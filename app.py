@@ -70,7 +70,7 @@ def index():
 <!DOCTYPE html>
 <html>
 <head>
-<title style="color:red; >SimpleHost</title>
+<title>SimpleHost</title>
 <style>
 body {
     background:#1c1c1c;
