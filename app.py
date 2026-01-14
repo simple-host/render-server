@@ -1,43 +1,45 @@
-from flask import Flask, request, redirect, url_for, render_template_string, abort
+from flask import (
+    Flask,
+    request,
+    redirect,
+    url_for,
+    render_template_string,
+    abort,
+    send_from_directory
+)
 import os
-import zipfile
-import io
 import random
 import string
-import mysql.connector
-import mimetypes
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
 # -------------------------
-# MySQL connection
+# Config
 # -------------------------
-db = mysql.connector.connect(
-    host=os.environ["MYSQL_HOST"],
-    user=os.environ["MYSQL_USER"],
-    password=os.environ["MYSQL_PASSWORD"],
-    database=os.environ["MYSQL_DB"],
-)
-cursor = db.cursor(dictionary=True)
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTENSIONS = {"html"}
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 # -------------------------
 # Helpers
 # -------------------------
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 def random_suffix():
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
-def site_exists(name):
-    cursor.execute("SELECT id FROM sites WHERE name=%s", (name,))
-    return cursor.fetchone()
+def unique_filename(base):
+    filename = f"{base}.html"
+    path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
 
-def create_site():
-    base = "simplehost"
-    site = site_exists(base)
-    name = base if not site else f"{base}-{random_suffix()}"
+    if not os.path.exists(path):
+        return filename
 
-    cursor.execute("INSERT INTO sites (name) VALUES (%s)", (name,))
-    db.commit()
-    return cursor.lastrowid, name
+    return f"{base}-{random_suffix()}.html"
 
 # -------------------------
 # Routes
@@ -47,31 +49,17 @@ def index():
     message = ""
 
     if request.method == "POST":
-        zip_file = request.files.get("file")
+        file = request.files.get("file")
 
-        if not zip_file or not zip_file.filename.endswith(".zip"):
-            message = "Please upload a ZIP file."
+        if not file or file.filename == "":
+            message = "No file selected."
+        elif not allowed_file(file.filename):
+            message = "Only HTML files allowed."
         else:
-            site_id, site_name = create_site()
-
-            z = zipfile.ZipFile(io.BytesIO(zip_file.read()))
-            if "index.html" not in z.namelist():
-                return "ZIP must contain index.html", 400
-
-            for filename in z.namelist():
-                if filename.endswith("/"):
-                    continue
-
-                content = z.read(filename)
-                mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-
-                cursor.execute("""
-                    INSERT INTO files (site_id, filename, content, mimetype)
-                    VALUES (%s, %s, %s, %s)
-                """, (site_id, filename, content, mimetype))
-
-            db.commit()
-            return redirect(url_for("uploaded", page_name=site_name))
+            filename = unique_filename("simplehost")
+            file.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
+            page_name = filename.replace(".html", "")
+            return redirect(url_for("uploaded", page_name=page_name))
 
     return render_template_string("""
 <!DOCTYPE html>
@@ -101,10 +89,12 @@ input, button {
 <body>
 <div class="container">
 <h1>SimpleHost</h1>
-<p>Upload a ZIP file containing your site</p>
+<p>Your site will be uploaded as:</p>
+<b>https://simplehost.onrender.com/simplehost</b>
+<br><br>
 <form method="POST" enctype="multipart/form-data">
-    <input type="file" name="file" accept=".zip" required><br>
-    <button>Upload ZIP</button>
+    <input type="file" name="file" required><br>
+    <button>Upload HTML</button>
 </form>
 <p style="color:red;">{{ message }}</p>
 </div>
@@ -116,29 +106,19 @@ input, button {
 def uploaded(page_name):
     return f"""
     <h1>Upload successful!</h1>
-    <p>Your site:</p>
-    <a href="/{page_name}/">https://simplehost.onrender.com/{page_name}/</a>
+    <p>Your site is live at:</p>
+    <a href="/{page_name}">https://simplehost.onrender.com/{page_name}</a>
     """
 
-@app.route("/<site>/")
-@app.route("/<site>/<path:filename>")
-def serve_site(site, filename="index.html"):
-    cursor.execute("SELECT id FROM sites WHERE name=%s", (site,))
-    site_row = cursor.fetchone()
-    if not site_row:
-        abort(404)
+@app.route("/<page>")
+def serve_page(page):
+    filename = f"{page}.html"
+    path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
 
-    cursor.execute("""
-        SELECT content, mimetype
-        FROM files
-        WHERE site_id=%s AND filename=%s
-    """, (site_row["id"], filename))
-    file = cursor.fetchone()
+    if os.path.exists(path):
+        return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
-    if not file:
-        abort(404)
-
-    return file["content"], 200, {"Content-Type": file["mimetype"]}
+    abort(404)
 
 # -------------------------
 # Run (Render-safe)
