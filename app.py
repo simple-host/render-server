@@ -50,13 +50,18 @@ def index():
 
     if request.method == "POST":
         file = request.files.get("file")
+        site_name = request.form.get("site_name", "").strip()
 
         if not file or file.filename == "":
             message = "No file selected."
         elif not allowed_file(file.filename):
             message = "Only HTML files allowed."
+        elif not site_name:
+            message = "Please enter a site name."
         else:
-            filename = unique_filename("simplehost")
+            # Sanitize the site name to avoid unsafe filenames
+            safe_name = secure_filename(site_name)
+            filename = unique_filename(safe_name)
             file.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
             page_name = filename.replace(".html", "")
             return redirect(url_for("uploaded", page_name=page_name))
@@ -65,7 +70,7 @@ def index():
 <!DOCTYPE html>
 <html>
 <head>
-<title>SimpleHost</title>
+<title style="color:red; >SimpleHost</title>
 <style>
 body {
     background:#1c1c1c;
@@ -89,10 +94,9 @@ input, button {
 <body>
 <div class="container">
 <h1>SimpleHost</h1>
-<p>Your site will be uploaded as:</p>
-<b>https://simplehost.onrender.com/simplehost</b>
-<br><br>
+<p>Your site will be uploaded with the name you choose:</p>
 <form method="POST" enctype="multipart/form-data">
+    <input type="text" name="site_name" placeholder="Enter site name" required><br>
     <input type="file" name="file" required><br>
     <button>Upload HTML</button>
 </form>
