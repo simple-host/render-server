@@ -1,151 +1,150 @@
-from flask import Flask, request, send_from_directory, redirect, url_for, render_template_string
+from flask import Flask, request, redirect, url_for, render_template_string, abort
 import os
-from werkzeug.utils import secure_filename
+import zipfile
+import io
+import random
+import string
+import mysql.connector
+import mimetypes
 
 app = Flask(__name__)
 
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# -------------------------
+# MySQL connection
+# -------------------------
+db = mysql.connector.connect(
+    host=os.environ["MYSQL_HOST"],
+    user=os.environ["MYSQL_USER"],
+    password=os.environ["MYSQL_PASSWORD"],
+    database=os.environ["MYSQL_DB"],
+)
+cursor = db.cursor(dictionary=True)
 
-ALLOWED_EXTENSIONS = {'html'}
+# -------------------------
+# Helpers
+# -------------------------
+def random_suffix():
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def site_exists(name):
+    cursor.execute("SELECT id FROM sites WHERE name=%s", (name,))
+    return cursor.fetchone()
 
-@app.route('/', methods=['GET', 'POST'])
+def create_site():
+    base = "simplehost"
+    site = site_exists(base)
+    name = base if not site else f"{base}-{random_suffix()}"
+
+    cursor.execute("INSERT INTO sites (name) VALUES (%s)", (name,))
+    db.commit()
+    return cursor.lastrowid, name
+
+# -------------------------
+# Routes
+# -------------------------
+@app.route("/", methods=["GET", "POST"])
 def index():
     message = ""
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            message = "No file selected."
+
+    if request.method == "POST":
+        zip_file = request.files.get("file")
+
+        if not zip_file or not zip_file.filename.endswith(".zip"):
+            message = "Please upload a ZIP file."
         else:
-            file = request.files['file']
-            if file.filename == '':
-                message = "No file selected."
-            elif not allowed_file(file.filename):
-                message = "Only HTML files are allowed."
-            else:
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                if os.path.exists(filepath):
-                    message = f"{filename} already exists. Please choose a different name."
-                else:
-                    file.save(filepath)
-                    page_name = filename.rsplit('.',1)[0]
-                    return redirect(url_for('uploaded', page_name=page_name))
+            site_id, site_name = create_site()
 
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SimpleHost</title>
-        <link rel="icon" type="image/png" href="{{ url_for('favicon') }}">
-        <style>
-            body {
-                background-color: #1c1c1c;
-                color: #e0e0e0;
-                font-family: Arial, sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                flex-direction: column;
-                text-align: center;
-            }
-            h1 { font-size: 3em; margin-bottom: 30px; color:#b0b0b0; }
-            input[type=file], input[type=submit] {
-                padding: 15px 20px;
-                margin: 15px 0;
-                border-radius: 6px;
-                border: none;
-                font-size: 1.2em;
-            }
-            input[type=submit] {
-                background-color: #333;
-                color: #e0e0e0;
-                font-weight: bold;
-                cursor: pointer;
-                transition: 0.3s;
-            }
-            input[type=submit]:hover {
-                background-color: #555;
-            }
-            .message { margin-top: 20px; color: #ff5555; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1>SimpleHost</h1>
-        <form method="POST" enctype="multipart/form-data">
-            <input type="file" name="file" required><br>
-            <input type="submit" value="Upload HTML">
-        </form>
-        {% if message %}
-            <div class="message">{{ message }}</div>
-        {% endif %}
-    </body>
-    </html>
-    ''', message=message)
+            z = zipfile.ZipFile(io.BytesIO(zip_file.read()))
+            if "index.html" not in z.namelist():
+                return "ZIP must contain index.html", 400
 
-# Favicon route
-@app.route('/favicon.ico')
-def favicon():
-    return send_from_directory(os.path.join(app.root_path, 'static'),
-                               'favicon.png', mimetype='image/png')
+            for filename in z.namelist():
+                if filename.endswith("/"):
+                    continue
 
-# Success page after upload showing entire site HTML
-@app.route('/uploaded/<page_name>')
+                content = z.read(filename)
+                mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+                cursor.execute("""
+                    INSERT INTO files (site_id, filename, content, mimetype)
+                    VALUES (%s, %s, %s, %s)
+                """, (site_id, filename, content, mimetype))
+
+            db.commit()
+            return redirect(url_for("uploaded", page_name=site_name))
+
+    return render_template_string("""
+<!DOCTYPE html>
+<html>
+<head>
+<title>SimpleHost</title>
+<style>
+body {
+    background:#1c1c1c;
+    color:#e0e0e0;
+    font-family:Arial;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+.container {
+    text-align:center;
+}
+input, button {
+    padding:15px;
+    margin:10px;
+    font-size:1.1em;
+}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>SimpleHost</h1>
+<p>Upload a ZIP file containing your site</p>
+<form method="POST" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".zip" required><br>
+    <button>Upload ZIP</button>
+</form>
+<p style="color:red;">{{ message }}</p>
+</div>
+</body>
+</html>
+""", message=message)
+
+@app.route("/uploaded/<page_name>")
 def uploaded(page_name):
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{page_name}.html")
-    if os.path.exists(filepath):
-        with open(filepath, "r", encoding="utf-8") as f:
-            html_content = f.read()
-    else:
-        return "<h1>Error: file not found</h1>"
+    return f"""
+    <h1>Upload successful!</h1>
+    <p>Your site:</p>
+    <a href="/{page_name}/">https://simplehost.onrender.com/{page_name}/</a>
+    """
 
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Upload Successful - SimpleHost</title>
-        <link rel="icon" type="image/png" href="{{ url_for('favicon') }}">
-        <style>
-            body {
-                background-color: #1c1c1c;
-                color: #e0e0e0;
-                font-family: Arial, sans-serif;
-                padding: 40px;
-                line-height: 1.6;
-            }
-            h1 { color: #b0b0b0; }
-            a { color: #ff6f61; text-decoration:none; }
-            a:hover { text-decoration: underline; }
-            pre {
-                background-color: #111;
-                color: #e0e0e0;
-                padding: 20px;
-                border-radius: 6px;
-                overflow-x: auto;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Upload Successful!</h1>
-        <p>Your site is available at: <a href="/{{ page_name }}">/{{ page_name }}</a></p>
-        <h2>Full HTML code of your uploaded site:</h2>
-        <pre>{{ html_content | e }}</pre>
-    </body>
-    </html>
-    ''', page_name=page_name, html_content=html_content)
+@app.route("/<site>/")
+@app.route("/<site>/<path:filename>")
+def serve_site(site, filename="index.html"):
+    cursor.execute("SELECT id FROM sites WHERE name=%s", (site,))
+    site_row = cursor.fetchone()
+    if not site_row:
+        abort(404)
 
-# Serve uploaded pages
-@app.route('/<page>')
-def serve_page(page):
-    filename = f"{page}.html"
-    if filename in os.listdir(app.config['UPLOAD_FOLDER']):
-        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-    else:
-        return "<h1>404 - Page Not Found</h1>", 404
+    cursor.execute("""
+        SELECT content, mimetype
+        FROM files
+        WHERE site_id=%s AND filename=%s
+    """, (site_row["id"], filename))
+    file = cursor.fetchone()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    if not file:
+        abort(404)
+
+    return file["content"], 200, {"Content-Type": file["mimetype"]}
+
+# -------------------------
+# Run (Render-safe)
+# -------------------------
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000))
+    )
