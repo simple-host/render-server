@@ -109,9 +109,36 @@ input, button {
 @app.route("/uploaded/<page_name>")
 def uploaded(page_name):
     return f"""
-    <h1>Upload successful!</h1>
-    <p>Your site is live at:</p>
-    <a href="/{page_name}">https://simplehost.onrender.com/{page_name}</a>
+<!DOCTYPE html>
+    <html>
+    <head>
+        <title>Upload Successful - SimpleHost</title>
+        <link rel="icon" type="image/png" href="{{ url_for('favicon') }}">
+        <style>
+            body {
+                background-color: #1c1c1c;
+                color: #e0e0e0;
+                font-family: Arial, sans-serif;
+                padding: 40px;
+                line-height: 1.6;
+            }
+            h1 { color: #b0b0b0; }
+            a { color: #ff6f61; text-decoration:none; }
+            a:hover { text-decoration: underline; }
+            pre {
+                background-color: #111;
+                color: #e0e0e0;
+                padding: 20px;
+                border-radius: 6px;
+                overflow-x: auto;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Upload Successful!</h1>
+        <p>Your site is available at: <a href="/{page_name}">https://simplehost.onrender.com/{page_name}</a></p>
+    </body>
+    </html>
     """
 
 @app.route("/<page>")
